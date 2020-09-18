@@ -213,9 +213,9 @@ public:
     Matrix<double, 18, 18> noise;                   // 18维
 
     double sum_dt;
-    Vector3d delta_p;
-    Quaterniond delta_q;
-    Vector3d delta_v;
+    Vector3d delta_p;   // 位置预积分量
+    Quaterniond delta_q;// 姿态预积分量
+    Vector3d delta_v;   // 速度预积分量
 
     vector<double> dt_buf;
     vector<Vector3d> acc_buf;

@@ -10,8 +10,8 @@ using namespace camodocal;
 
 int FeatureTracker::n_id = 0;
 
-// 判断特征点是否在图像内部
-bool inBorder(const cv::Point2f &pt) {
+/// 判断特征点是否在图像内部
+bool inBorder(const cv::Point2f& pt) {
     const int BORDER_SIZE = 1;
     int img_x = cvRound(pt.x);
     int img_y = cvRound(pt.y);
@@ -19,7 +19,7 @@ bool inBorder(const cv::Point2f &pt) {
            && BORDER_SIZE <= img_y && img_y < ROW - BORDER_SIZE;
 }
 
-// 去除无法跟踪的特征点
+/// 去除无法跟踪的特征点
 void reduceVector(vector<cv::Point2f>& v, vector<uchar>& status) {
     int j = 0;
     for (int i = 0; i < int(v.size()); i++)
@@ -28,7 +28,7 @@ void reduceVector(vector<cv::Point2f>& v, vector<uchar>& status) {
     v.resize(j);
 }
 
-// 去除无法跟踪的特征点
+/// 去除无法跟踪的特征点
 void reduceVector(vector<int>& v, vector<uchar>& status) {
     int j = 0;
     for (int i = 0; i < int(v.size()); i++)
@@ -50,18 +50,16 @@ void FeatureTracker::setMask() {
     else
         mask = cv::Mat(ROW, COL, CV_8UC1, cv::Scalar(255)); // 默认进行此处操作
 
-    // 保存跟踪信息
+    /// 保存跟踪信息
     vector<pair<int, pair<cv::Point2f, int>>> cnt_pts_id;
 
     for (unsigned int i = 0; i < forw_pts.size(); i++)
-        cnt_pts_id.push_back(make_pair(track_cnt[i],
-                                       make_pair(forw_pts[i], ids[i])));
+        cnt_pts_id.push_back(make_pair(track_cnt[i], make_pair(forw_pts[i], ids[i])));
 
-    // 根据first进行排序
+    /// 根据first进行排序
     sort(cnt_pts_id.begin(), cnt_pts_id.end(),
          [](const pair<int, pair<cv::Point2f, int>>& a,
-            const pair<int, pair<cv::Point2f, int>>& b)
-    {
+            const pair<int, pair<cv::Point2f, int>>& b) {
         return a.first > b.first;
     });
 
@@ -69,19 +67,20 @@ void FeatureTracker::setMask() {
     ids.clear();
     track_cnt.clear();
 
+    /// mask先全部设置为255（白色）填充，然后根据跟踪次数排序的特征点位置进行极大值抑制
     for (auto& it : cnt_pts_id) {
         if (mask.at<uchar>(it.second.first) == 255) {
-            // 按照跟踪次数多的特征点及对应信息优先加入,设置mask值为255
+            /// 按照跟踪次数多的特征点及对应信息优先加入,设置mask值为255
             forw_pts.push_back(it.second.first);
             ids.push_back(it.second.second);
             track_cnt.push_back(it.first);
-            // 将mask周围30的范围设置mask值为0,后续就不会被选择
+            /// 将mask周围30的范围设置mask值为0,后续就不会被选择
             cv::circle(mask, it.second.first, MIN_DIST, 0, -1);
         }
     }
 }
 
-// 将新检测的特征点添加
+/// 将新检测的特征点添加
 void FeatureTracker::addPoints() {
     for (auto& p : n_pts) {
         forw_pts.push_back(p);
@@ -100,17 +99,17 @@ void FeatureTracker::readImage(const cv::Mat& _img, double _cur_time) {
     TicToc t_r;
     cur_time = _cur_time;
 
-    if (EQUALIZE) { // 太亮或者太暗,进行直方图均衡化处理,默认使用此选项
+    if (EQUALIZE) { /// 太亮或者太暗,进行直方图均衡化处理,默认使用此选项
         cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
         TicToc t_c;
-        // 均衡化处理
+        /// 均衡化处理
         clahe->apply(_img, img);
     } else
         img = _img;
 
-    if (forw_img.empty()) { // 如果当前帧图像为空,则说明是第一次读入,进行各个记录状态的初始化
+    if (forw_img.empty()) { /// 如果当前帧图像为空,则说明是第一次读入,进行各个记录状态的初始化
         prev_img = cur_img = forw_img = img;
-    } else { // 只需更新当前帧数据
+    } else { /// 只需更新当前帧数据
         forw_img = img;
     }
 
@@ -127,11 +126,11 @@ void FeatureTracker::readImage(const cv::Mat& _img, double _cur_time) {
         cv::calcOpticalFlowPyrLK(cur_img, forw_img, cur_pts, forw_pts,
                                  status, err, cv::Size(21, 21), 3);
 
-        // 将位于图像边界外的点标记为0
+        /// 将位于图像边界外的点标记为0
         for (int i = 0; i < int(forw_pts.size()); i++)
             if (status[i] && !inBorder(forw_pts[i]))
                 status[i] = 0;
-        // 根据status,把跟踪失败的点剔除,所有记录中都要统一同步剔除
+        /// 根据status,把跟踪失败的点剔除,所有记录中都要统一同步剔除
         reduceVector(prev_pts, status);
         reduceVector(cur_pts, status);
         reduceVector(forw_pts, status);
@@ -140,18 +139,18 @@ void FeatureTracker::readImage(const cv::Mat& _img, double _cur_time) {
         reduceVector(track_cnt, status);
     }
 
-    // 根据status,将跟踪成功的跟踪次数+1,次数大反映跟踪时间长
+    /// 根据status,将跟踪成功的跟踪次数+1,次数大反映跟踪时间长
     for (auto& n : track_cnt)
         n++;
 
     if (PUB_THIS_FRAME) { // 默认是false
-        // 通过基础矩阵剔除outliers
+        /// 通过基础矩阵剔除outliers
         rejectWithF();
         TicToc t_m;
-        // 特征点30像素周围点剔除
+        /// 特征点周围进行30像素范围的极大值抑制
         setMask();
         TicToc t_t;
-        // 判断是否满足特征点需求,默认为150个
+        /// 判断是否满足特征点需求,默认为150个
         int n_max_cnt = MAX_CNT - static_cast<int>(forw_pts.size());
         if (n_max_cnt > 0) {
             if(mask.empty())
@@ -168,21 +167,20 @@ void FeatureTracker::readImage(const cv::Mat& _img, double _cur_time) {
              *      7.计算协方差的窗口大小,8.是否使用harris角点算法,默认是使用shi-tomasi算法
              *      8.Harris角点的检测所需k值,默认为0.04
              */
-            cv::goodFeaturesToTrack(forw_img, n_pts, MAX_CNT - forw_pts.size(),
-                                    0.01, MIN_DIST, mask);
+            cv::goodFeaturesToTrack(forw_img, n_pts, MAX_CNT - forw_pts.size(), 0.01, MIN_DIST, mask);
         } else
             n_pts.clear();
         TicToc t_a;
-        // 将新检测到的特征点n_pts添加到记录中
+        /// 将新检测到的特征点n_pts添加到记录中
         addPoints();
     }
-    // 更新pre,cur,forw信息
+    /// 更新pre,cur,forw信息
     prev_img = cur_img;
     prev_pts = cur_pts;
     prev_un_pts = cur_un_pts;
     cur_img = forw_img;
     cur_pts = forw_pts;
-    // 使用不同的相机模型去畸变校正,转换为归一化坐标系,计算速度
+    /// 使用不同的相机模型去畸变校正,转换为归一化坐标系,计算速度
     undistortedPoints();
     prev_time = cur_time;
 }
@@ -191,14 +189,15 @@ void FeatureTracker::readImage(const cv::Mat& _img, double _cur_time) {
  * 通过基础矩阵剔除outliers
  */
 void FeatureTracker::rejectWithF() {
+    /// 确保能够构造基础矩阵
     if (forw_pts.size() >= 8) {
         TicToc t_f;
         vector<cv::Point2f> un_cur_pts(cur_pts.size()), un_forw_pts(forw_pts.size());
         for (unsigned int i = 0; i < cur_pts.size(); i++) {
             Eigen::Vector3d tmp_p;
-            // 根据不同的相机模型将二维坐标转换到三维坐标
+            /// 根据不同的相机模型将二维坐标转换到三维坐标
             m_camera->liftProjective(Eigen::Vector2d(cur_pts[i].x, cur_pts[i].y), tmp_p);
-            // 转化为归一化像素坐标
+            /// 转化为归一化像素坐标
             tmp_p.x() = FOCAL_LENGTH * tmp_p.x() / tmp_p.z() + COL / 2.0;
             tmp_p.y() = FOCAL_LENGTH * tmp_p.y() / tmp_p.z() + ROW / 2.0;
             un_cur_pts[i] = cv::Point2f(tmp_p.x(), tmp_p.y());
@@ -210,7 +209,7 @@ void FeatureTracker::rejectWithF() {
         }
 
         vector<uchar> status;
-        // 求取基础矩阵
+        /// 求取基础矩阵 这里F_THRESHOLD为1个像素
         cv::findFundamentalMat(un_cur_pts, un_forw_pts, cv::FM_RANSAC, F_THRESHOLD, 0.99, status);
         int size_a = cur_pts.size();
         reduceVector(prev_pts, status);
@@ -222,7 +221,7 @@ void FeatureTracker::rejectWithF() {
     }
 }
 
-// 更新特征点id
+/// 更新特征点id
 bool FeatureTracker::updateID(unsigned int i) {
     if (i < ids.size()) {
         if (ids[i] == -1)
@@ -232,7 +231,7 @@ bool FeatureTracker::updateID(unsigned int i) {
         return false;
 }
 
-// 读取相机内参
+/// 读取相机内参
 void FeatureTracker::readIntrinsicParameter(const string& calib_file) {
     cout << "reading paramerter of camera " << calib_file << endl;
     m_camera = CameraFactory::instance()->generateCameraFromYamlFile(calib_file);

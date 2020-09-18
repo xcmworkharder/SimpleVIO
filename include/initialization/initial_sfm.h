@@ -5,7 +5,7 @@
 #include <ceres/rotation.h>
 #include <Eigen/Dense>
 
-// 每个路标点由多个连续图像观测到
+/// 每个路标点由多个连续图像观测到
 struct SFMFeature {
     bool state; // 特征点的状态（是否被三角化）
     int id;     // 特征点id
@@ -15,7 +15,7 @@ struct SFMFeature {
     double depth;       // 深度
 };
 
-// 用于ceres优化的代价类, 代价仿函数和ceres代价函数生成函数
+/// 用于ceres优化的代价类, 代价仿函数和ceres代价函数生成函数
 struct ReprojectionError3D {
     ReprojectionError3D(double _observed_u, double _observed_v)
             : observed_u(_observed_u), observed_v(_observed_v) { }

@@ -22,6 +22,19 @@ void writeToCSVfile(std::string& name, Eigen::MatrixXd& matrix) {
 
 namespace myslam {
 namespace backend {
+
+// 控制使用LM或者Dogleg 0: LM, 1: Dogleg
+const int algorithm_option = 1;
+// 控制是否加速,以及加速的方法 0:不加速 1:openmp 2:multiThread
+const int acc_option = 0;
+// LM的isGoodStep策略 0:原策略 1:原策略优化 2:新策略 3:新策略2
+const int lm_strategy_option = 2;
+// DogLeg的isGoodStep策略 0:论文rho_计算策略 1:和g2o一致的策略
+const int dogleg_strategy_option = 1;
+// 控制LM或者Dogleg算法chi和lambda初始化选项
+// 0:Nielsen 1:Levenberg 2:Marquardt 3:Quadratic 4:Dogleg
+const int chi_lambda_init_option = 4;
+
 void Problem::logoutVectorSize() {
     // LOG(INFO) <<
     //           "1 problem::LogoutVectorSize verticies_:" << verticies_.size() <<
@@ -238,6 +251,122 @@ bool Problem::solve(int iterations) {
     std::cout << "problem solve cost: " << t_solve.toc() << " ms" << std::endl;
     std::cout << "   makeHessian cost: " << t_hessian_cost_ << " ms" << std::endl;
     t_hessian_cost_ = 0.;
+    return true;
+}
+
+bool Problem::solveDogleg(int iterations) {
+    if (edges_.size() == 0 || verticies_.size() == 0) {
+        std::cerr << "\nCannot solve problem without edges or verticies" << std::endl;
+        return false;
+    }
+
+    TicToc t_solve;
+    // 统计优化变量的维数,为构建 H 矩阵做准备
+    setOrdering();
+    // 遍历edge, 构建 H 矩阵。里面有delta_x_初值
+    makeHessian();
+    // 使用新的 Chi 和 Lambda 的初始化
+    // ComputeLambdaInitLM();
+//    computeChiInitAndLambdaInit();
+//
+//    // 尝试把 r 从1 增大到 1e4 来避免MH-05数据集上漂移的问题
+//    bool found = false;
+//    double radius_ = 1e4;
+//    //bool stop = false;
+//    int iter = 0;
+//    const int numIterationsMax = 10;
+//    double last_chi_ = 1e20;
+//    while ( !found && (iter < numIterationsMax)) {
+//        std::cout << "iter: " << iter << " , chi= " << currentChi_
+//                  << ", radius= " << radius_ << std::endl;
+//        iter++;
+//        bool oneStepSuccess = false;
+//        int false_cnt = 0;
+//        while (!oneStepSuccess && false_cnt < 10)  {// 不断尝试 Lambda, 直到成功迭代一步
+//            // 计算alpha 和 h_gn
+//            double alpha_ = b_.squaredNorm() / ( (Hessian_ * b_).dot(b_) );
+//            //alpha_ = b_.squaredNorm() / (b_.transpose()*Hessian_*b_);
+//            h_sd_ = alpha_ * b_;
+//            // To Do: 此处Hessian_比较大, 直接求逆很耗时, 可采用 Gauss-Newton法求解
+//            //h_gn_ = Hessian_.inverse() * b_;
+//            h_gn_ = Hessian_.ldlt().solve(b_);
+//            double h_sd_norm = h_sd_.norm();
+//            double h_gn_norm = h_gn_.norm();
+//            // 计算h_dl 步长
+//            if ( h_gn_norm <= radius_){
+//                h_dl_ = h_gn_;
+//                // 此处条件判断直接用了 h_sd_norm, 和论文的 alpha_*h_sd_norm不同
+//
+//            }else if ( alpha_*h_sd_norm >= radius_ ) {
+//                h_dl_ = ( radius_ / h_sd_norm ) * h_sd_;
+//
+//            } else {
+//                // 计算beta用于更新步长
+//                // 此处a直接等于 h_sd_, 和论文的 alpha_* h_sd_ 有所不同
+//                //VecX a = alpha_ * h_sd_;
+//                VecX a  = h_sd_;
+//                VecX b = h_gn_;
+//                //double c = a.transpose() * (b - a);
+//                double c = a.dot( b - a );
+//                if (c <= 0){
+//                    beta_ = ( -c + sqrt(c*c + (b-a).squaredNorm() *
+//                                              (radius_*radius_ - a.squaredNorm())) )
+//                            / (b - a).squaredNorm();
+//
+//                }else{
+//                    beta_ = (radius_*radius_ - a.squaredNorm()) / (c +
+//                                                                   sqrt(c*c + (b-a).squaredNorm()
+//                                                                              * (radius_*radius_ - a.squaredNorm())));
+//
+//                }               assert(beta_ > 0.0 && beta_ < 1.0 && "Error while
+//                                               computing beta");
+//                                               // 此处 a 直接等于 h_sd_, 和论文的有所不同
+//                                               h_dl_= a + beta_ * ( b - a );
+//
+//    }
+//    delta_x_ = h_dl_;
+//    UpdateStates();
+//    oneStepSuccess = IsGoodStepInDogleg();
+//    // 后续处理,
+//    if(oneStepSuccess)
+//    {
+//    MakeHessian();
+//    false_cnt = 0;
+//
+//    }
+//    else
+//
+//    {
+//    false_cnt++;
+//    RollbackStates();
+//
+//
+//    }
+//    }
+//    iter++;
+//    if(last_chi_ - currentChi_ < 1e-5  || b_.norm() < 1e-5 )
+//
+//    {
+//    std::cout << "Dogleg: find the right result. " <<
+//    std::endl;
+//    found = true;
+//
+//    }
+//    last_chi_ = currentChi_;
+//
+//    }
+//    std::cout << "problem solve cost: " << t_solve.toc() << " ms" <<
+//    std::endl;
+//    std::cout << "   makeHessian cost: " << t_hessian_cost_ << " ms" <<
+//    std::endl;
+//    // 记录本次Hessian处理时长
+//    hessian_time_per_frame = t_hessian_cost_;
+//    // 记录本次frame时长(包括hessian时长)
+//    time_per_frame = t_solve.toc();
+//    // 记录本frame的求解次数
+//    solve_count_per_frame = iter;
+//
+//    t_hessian_cost_ = 0.;
     return true;
 }
 
@@ -589,7 +718,7 @@ VecX Problem::pcgSolver(const MatXX& A, const VecX& b, int maxIter = -1) {
 
 /*
 *  marg 所有和 frame 相连的 edge: imu factor, projection factor
-*  如果某个landmark和该frame相连，但是又不想加入marg, 那就把改edge先去掉
+*  如果某个landmark和该frame相连，但是又不想加入marg, 那就把该edge先去掉
 *
 */
 bool Problem::marginalize(const std::vector<std::shared_ptr<Vertex>> margVertexs,
@@ -634,7 +763,7 @@ bool Problem::marginalize(const std::vector<std::shared_ptr<Vertex>> margVertexs
 
             double drho;
             MatXX robustInfo(edge->information().rows(), edge->information().cols());
-            edge->robustInfo(drho,robustInfo);
+            edge->robustInfo(drho, robustInfo);
 
             for (size_t j = i; j < verticies.size(); ++j) {
                 auto v_j = verticies[j];

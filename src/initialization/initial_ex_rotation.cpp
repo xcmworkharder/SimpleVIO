@@ -10,14 +10,14 @@ InitialEXRotation::InitialEXRotation() {
     ric = Matrix3d::Identity();
 }
 
-// 计算相机旋转外参,相机到IMU的旋转,平移较小,暂不考虑
+/// 计算相机旋转外参,相机到IMU的旋转,平移较小,暂不考虑
 bool InitialEXRotation::calibrationExRotation(vector<pair<Vector3d, Vector3d>>& corres,
                                               Quaterniond& delta_q_imu,
                                               Matrix3d& calib_ric) {
     frame_count++;
-    Rc.push_back(solveRelativeR(corres)); // 计算两帧间的相机旋转矩阵,由对极几何得到
-    Rimu.push_back(delta_q_imu.toRotationMatrix()); // 帧间IMU旋转矩阵,预积分得出
-    Rc_g.push_back(ric.inverse() * delta_q_imu * ric); // 通过IMU变换得出的两帧相机旋转
+    Rc.push_back(solveRelativeR(corres));               // 计算两帧间的相机旋转矩阵,由对极几何得到
+    Rimu.push_back(delta_q_imu.toRotationMatrix());     // 帧间IMU旋转矩阵,预积分得出
+    Rc_g.push_back(ric.inverse() * delta_q_imu * ric);  // 通过IMU变换得出的两帧相机旋转
 
     MatrixXd A(frame_count * 4, 4);
     A.setZero();
@@ -26,8 +26,8 @@ bool InitialEXRotation::calibrationExRotation(vector<pair<Vector3d, Vector3d>>& 
         Quaterniond r1(Rc[i]);
         Quaterniond r2(Rc_g[i]);
 
-        double angular_distance = 180 / M_PI * r1.angularDistance(r2); // 旋转角度
-        double huber = angular_distance > 5.0 ? 5.0 / angular_distance : 1.0; // 鲁棒核函数
+        double angular_distance = 180 / M_PI * r1.angularDistance(r2);          // 旋转角度
+        double huber = angular_distance > 5.0 ? 5.0 / angular_distance : 1.0;   // 鲁棒核函数
         ++sum_ok;
         Matrix4d L, R;
 

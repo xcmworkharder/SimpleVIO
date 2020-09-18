@@ -10,17 +10,17 @@
 #include <memory>
 #include <opencv2/opencv.hpp>
 
-// IMU信息结构
+/// IMU信息结构
 struct IMU_MSG {
-    double header;  // 时间戳
+    double header;                          // 时间戳
     Eigen::Vector3d linear_acceleration;    // 加速度信息
     Eigen::Vector3d angular_velocity;       // 角速度信息
 };
 
-// Imu信息的常值指针
+/// Imu信息的常值指针
 typedef std::shared_ptr<IMU_MSG const> ImuConstPtr;
 
-// 图像信息结构
+/// 图像信息结构
 struct IMG_MSG {
     double header;                          // 时间戳
     std::vector<Eigen::Vector3d> points;    // points
@@ -31,35 +31,35 @@ struct IMG_MSG {
     std::vector<float> velocity_y_of_point; // vel_y
 };
 
-// 图像信息的常值指针
+/// 图像信息的常值指针
 typedef std::shared_ptr <IMG_MSG const> ImgConstPtr;
 
-// vio系统类
+/// vio主系统类
 class System {
 public:
     System(const std::string& sConfig_files);
     ~System();
 
-    // 发布图像数据线程
+    /// 发布图像数据线程
     void pubImageData(double dStampSec, cv::Mat& img);
-    // 发布Imu数据线程
+    /// 发布Imu数据线程
     void pubImuData(double dStampSec, const Eigen::Vector3d& vGyr,
                     const Eigen::Vector3d& vAcc);
 
-    // visual-imu 后端处理线程
+    /// visual-imu 后端处理线程
     void processBackEnd();
-    // 系统处理显示线程
+    /// 系统处理显示线程
     void draw();
 
     pangolin::OpenGlRenderState s_cam;
     pangolin::View d_cam;
 
 private:
-    //feature tracker
+    /// feature tracker
     std::vector<uchar> r_status;
     std::vector<float> r_err;
     // std::queue<ImageConstPtr> img_buf;
-    // 特征跟踪
+    /// 特征跟踪
     FeatureTracker trackerData[NUM_OF_CAM];
     double first_image_time;
     int pub_count = 1;
@@ -67,14 +67,14 @@ private:
     double last_image_time = 0;
     bool init_pub = 0;
 
-    //estimator
+    /// estimator
     Estimator estimator;
 
     std::condition_variable con;
     double current_time = -1;
     std::queue<ImuConstPtr> imu_buf;
     std::queue<ImgConstPtr> feature_buf;
-    // std::queue<PointCloudConstPtr> relo_buf;
+    /// std::queue<PointCloudConstPtr> relo_buf;
     int sum_of_wait = 0;
 
     std::mutex m_buf;

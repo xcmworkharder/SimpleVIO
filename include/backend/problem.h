@@ -64,6 +64,9 @@ public:
      * @return
      */
     bool solve(int iterations = 10);
+    bool solveLM(int iterations = 10);
+    bool solveDogleg(int iterations = 10);
+    bool isGoodStepDogleg();
 
     /// 边缘化一个frame和以它为host的landmark
     bool marginalize(std::shared_ptr<Vertex> frameVertex,

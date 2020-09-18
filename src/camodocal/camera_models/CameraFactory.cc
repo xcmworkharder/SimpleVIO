@@ -1,29 +1,22 @@
 #include "camodocal/camera_models/CameraFactory.h"
-
 #include <boost/algorithm/string.hpp>
-
 #include "camodocal/camera_models/CataCamera.h"
 #include "camodocal/camera_models/EquidistantCamera.h"
 #include "camodocal/camera_models/PinholeCamera.h"
 #include "camodocal/camera_models/ScaramuzzaCamera.h"
-
 #include "ceres/ceres.h"
 
-namespace camodocal
-{
+namespace camodocal {
 
 boost::shared_ptr<CameraFactory> CameraFactory::m_instance;
 
-CameraFactory::CameraFactory()
-{
+CameraFactory::CameraFactory() {
 
 }
 
 boost::shared_ptr<CameraFactory>
-CameraFactory::instance(void)
-{
-    if (m_instance.get() == 0)
-    {
+CameraFactory::instance(void) {
+    if (m_instance.get() == 0) {
         m_instance.reset(new CameraFactory);
     }
 
@@ -33,12 +26,9 @@ CameraFactory::instance(void)
 CameraPtr
 CameraFactory::generateCamera(Camera::ModelType modelType,
                               const std::string& cameraName,
-                              cv::Size imageSize) const
-{
-    switch (modelType)
-    {
-    case Camera::KANNALA_BRANDT:
-    {
+                              cv::Size imageSize) const {
+    switch (modelType) {
+    case Camera::KANNALA_BRANDT: {
         EquidistantCameraPtr camera(new EquidistantCamera);
 
         EquidistantCamera::Parameters params = camera->getParameters();
@@ -48,8 +38,7 @@ CameraFactory::generateCamera(Camera::ModelType modelType,
         camera->setParameters(params);
         return camera;
     }
-    case Camera::PINHOLE:
-    {
+    case Camera::PINHOLE: {
         PinholeCameraPtr camera(new PinholeCamera);
 
         PinholeCamera::Parameters params = camera->getParameters();
@@ -59,8 +48,7 @@ CameraFactory::generateCamera(Camera::ModelType modelType,
         camera->setParameters(params);
         return camera;
     }
-    case Camera::SCARAMUZZA:
-    {
+    case Camera::SCARAMUZZA: {
         OCAMCameraPtr camera(new OCAMCamera);
 
         OCAMCamera::Parameters params = camera->getParameters();
@@ -71,8 +59,7 @@ CameraFactory::generateCamera(Camera::ModelType modelType,
         return camera;
     }
     case Camera::MEI:
-    default:
-    {
+    default: {
         CataCameraPtr camera(new CataCamera);
 
         CataCamera::Parameters params = camera->getParameters();
@@ -86,48 +73,34 @@ CameraFactory::generateCamera(Camera::ModelType modelType,
 }
 
 CameraPtr
-CameraFactory::generateCameraFromYamlFile(const std::string& filename)
-{
+CameraFactory::generateCameraFromYamlFile(const std::string& filename) {
     cv::FileStorage fs(filename, cv::FileStorage::READ);
 
-    if (!fs.isOpened())
-    {
+    if (!fs.isOpened()) {
         return CameraPtr();
     }
 
     Camera::ModelType modelType = Camera::MEI;
-    if (!fs["model_type"].isNone())
-    {
+    if (!fs["model_type"].isNone()) {
         std::string sModelType;
         fs["model_type"] >> sModelType;
 
-        if (boost::iequals(sModelType, "kannala_brandt"))
-        {
+        if (boost::iequals(sModelType, "kannala_brandt")) {
             modelType = Camera::KANNALA_BRANDT;
-        }
-        else if (boost::iequals(sModelType, "mei"))
-        {
+        } else if (boost::iequals(sModelType, "mei")) {
             modelType = Camera::MEI;
-        }
-        else if (boost::iequals(sModelType, "scaramuzza"))
-        {
+        } else if (boost::iequals(sModelType, "scaramuzza")) {
             modelType = Camera::SCARAMUZZA;
-        }
-        else if (boost::iequals(sModelType, "pinhole"))
-        {
+        } else if (boost::iequals(sModelType, "pinhole")) {
             modelType = Camera::PINHOLE;
-        }
-        else
-        {
+        } else {
             std::cerr << "# ERROR: Unknown camera model: " << sModelType << std::endl;
             return CameraPtr();
         }
     }
 
-    switch (modelType)
-    {
-    case Camera::KANNALA_BRANDT:
-    {
+    switch (modelType) {
+    case Camera::KANNALA_BRANDT: {
         EquidistantCameraPtr camera(new EquidistantCamera);
 
         EquidistantCamera::Parameters params = camera->getParameters();
@@ -135,8 +108,7 @@ CameraFactory::generateCameraFromYamlFile(const std::string& filename)
         camera->setParameters(params);
         return camera;
     }
-    case Camera::PINHOLE:
-    {
+    case Camera::PINHOLE: {
         PinholeCameraPtr camera(new PinholeCamera);
 
         PinholeCamera::Parameters params = camera->getParameters();
@@ -144,8 +116,7 @@ CameraFactory::generateCameraFromYamlFile(const std::string& filename)
         camera->setParameters(params);
         return camera;
     }
-    case Camera::SCARAMUZZA:
-    {
+    case Camera::SCARAMUZZA: {
         OCAMCameraPtr camera(new OCAMCamera);
 
         OCAMCamera::Parameters params = camera->getParameters();
@@ -154,8 +125,7 @@ CameraFactory::generateCameraFromYamlFile(const std::string& filename)
         return camera;
     }
     case Camera::MEI:
-    default:
-    {
+    default: {
         CataCameraPtr camera(new CataCamera);
 
         CataCamera::Parameters params = camera->getParameters();

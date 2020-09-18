@@ -122,7 +122,7 @@ public:
     std::map<double, ImageFrame> all_image_frame;
     IntegrationBase* tmp_pre_integration;
 
-    //relocalization variable
+    // relocalization variable
     bool relocalization_info;
     double relo_frame_stamp;
     double relo_frame_index;
