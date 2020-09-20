@@ -1001,6 +1001,16 @@ void Estimator::problemSolve() {
         std::cout << "             after: " << bprior_.norm() << std::endl;
         std::cout << "                    " << errprior_.norm() << std::endl;
     }
+    total_hessian_time += problem.hessian_time_per_frame;
+    total_frame_num++;
+    total_frame_time += problem.time_per_frame;
+    solve_count_per_frame += problem.solve_count_per_frame;
+    cout << "Total Frame Number By Now: " << total_frame_num << endl;
+    cout << "Total Hessian Process Time By Now: " << total_hessian_time << " ms" << endl;
+    cout << "Mean Hessian Process Time By Now: " << total_hessian_time / double(total_frame_num) << " ms" << endl;
+    cout << "Total Frame Process Time By Now: " << total_frame_time << " ms" << endl;
+    cout << "Mean Frame Process Time By Now: " << total_frame_time / double(total_frame_num) << " ms" << endl;
+    cout << "Total Solve Iteration count By Now: " << solve_count_per_frame << endl;
     /// update parameter
     for (int i = 0; i < WINDOW_SIZE + 1; i++) {
         VecX p = vertexCams_vec[i]->parameters();

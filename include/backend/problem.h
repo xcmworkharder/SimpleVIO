@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <map>
 #include <memory>
+#include <thread>
+#include <mutex>
 
 #include "eigen_types.h"
 #include "edge.h"
@@ -90,7 +92,25 @@ public:
     //test compute prior
     void testComputePrior();
 
+public:
+    //double total_time = 0.0; // 图像处理时间，正常应放在private中，创建public get接口
+    double hessian_time_per_frame = 0.0;
+    double time_per_frame = 0.0;
+    long solve_count_per_frame = 0;
+
+    // 用于在线程之间共享的数据
+    MatXX m_H;
+    VecX m_b;
+    std::mutex m_mutex; // 一定的加上std::
+
 private:
+    /// 三种方式的makeHessian
+    void makeHessianNormal();
+    void makeHessianOpenMP();
+    void makeHessianMultiThread();
+    /// 处理边的线程函数，被makeHessianMultiThread()调用
+    void thdDoEdges(int start, int end);
+
     /// Solve的实现，解通用问题
     bool solveGenericProblem(int iterations);
 

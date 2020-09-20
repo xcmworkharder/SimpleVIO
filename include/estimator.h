@@ -136,6 +136,15 @@ public:
     Eigen::Vector3d relo_relative_t;
     Eigen::Quaterniond relo_relative_q;
     double relo_relative_yaw;
+
+    // 记录所有frame和hessian的处理时间
+    double total_hessian_time = 0.0;
+    // 记录所有frame处理时间
+    double total_frame_time = 0.0;
+    // 记录所有frame个数
+    long total_frame_num = 0;
+    // 记录所有frame的solve次数
+    long solve_count_per_frame = 0;
 };
 
 

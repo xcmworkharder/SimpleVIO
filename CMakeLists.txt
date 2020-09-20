@@ -2,7 +2,7 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
 PROJECT(SIMPLE_VIO)
 
 SET(CMAKE_BUILD_TYPE "Release")
-SET(CMAKE_CXX_FLAGS "-std=c++11")
+SET(CMAKE_CXX_FLAGS "-std=c++11 -fopenmp")
 SET(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g") # -O3最高代码级优化(o0最低) -g生成gdb调试信息 -wall
 
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules) # 自定义或统一存放cmake模块
@@ -75,4 +75,5 @@ ADD_EXECUTABLE(run_euroc app/run_euroc.cpp)
 TARGET_LINK_LIBRARIES(run_euroc
         MyVio
         -lpthread
+        -fopenmp
         )

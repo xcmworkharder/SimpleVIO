@@ -4,10 +4,15 @@
 #include <eigen3/Eigen/Dense>
 #include <iomanip>
 #include "utility/tic_toc.h"
-
-#ifdef USE_OPENMP
 #include <omp.h>
-#endif
+#include <thread>
+//#ifdef USE_OPENMP
+//#include <omp.h>
+//#endif
+#pragma omp declare reduction (+: VecX: omp_out=omp_out+omp_in)\
+     initializer(omp_priv=VecX::Zero(omp_orig.size()))
+#pragma omp declare reduction (+: MatXX: omp_out=omp_out+omp_in)\
+     initializer(omp_priv=MatXX::Zero(omp_orig.rows(), omp_orig.cols()))
 
 using namespace std;
 
@@ -250,6 +255,12 @@ bool Problem::solve(int iterations) {
     }
     std::cout << "problem solve cost: " << t_solve.toc() << " ms" << std::endl;
     std::cout << "   makeHessian cost: " << t_hessian_cost_ << " ms" << std::endl;
+    // 记录本次hessian处理时长
+    hessian_time_per_frame = t_hessian_cost_;
+    // 记录本次frame时长（包括hessian时长）
+    time_per_frame = t_solve.toc();
+    // 记录本次frame的求解次数
+    solve_count_per_frame = iter;
     t_hessian_cost_ = 0.;
     return true;
 }
@@ -415,19 +426,30 @@ bool Problem::checkOrdering() {
     return true;
 }
 
+/// 支持三种方式：不加速 openmp加速 和 多线程加速
 void Problem::makeHessian() {
+    int option = 1; // 0: normal 1:openmp 2:multithread
+    switch (option) {
+        case 0:
+            makeHessianNormal();
+            break;
+        case 1:
+            makeHessianOpenMP();
+            break;
+        case 2:
+            makeHessianMultiThread();
+            break;
+    }
+}
+
+void Problem::makeHessianNormal() {
     TicToc t_h;
     // 直接构造大的 H 矩阵
     ulong size = ordering_generic_;
     MatXX H(MatXX::Zero(size, size));
     VecX b(VecX::Zero(size));
 
-    // TODO:: accelate, accelate, accelate
-//#ifdef USE_OPENMP
-//#pragma omp parallel for
-//#endif
-    for (auto& edge: edges_) {
-
+    for (auto& edge : edges_) {
         edge.second->computeResidual();
         edge.second->computeJacobians();
 
@@ -499,6 +521,199 @@ void Problem::makeHessian() {
         b_.head(ordering_poses_) += b_prior_tmp;
     }
     delta_x_ = VecX::Zero(size);  // initial delta_x = 0_n;
+}
+
+void Problem::makeHessianOpenMP() {
+    TicToc t_h;
+    // 直接构造大的 H 矩阵
+    ulong size = ordering_generic_;
+    MatXX H(MatXX::Zero(size, size));
+    VecX b(VecX::Zero(size));
+
+    // 使用openmp加速
+    vector<unsigned long> edge_ids;
+    for (auto& edge : edges_) {
+        edge_ids.push_back(edge.first);
+    }
+    int threadNum = 6;
+    omp_set_num_threads(threadNum);
+    Eigen::setNbThreads(1);
+#pragma omp parallel for reduction(+:H) reduction(+:b)
+    for (int idx = 0; idx < edges_.size(); ++idx) {
+        auto edge = edges_[edge_ids[idx]];
+        edge->computeResidual();
+        edge->computeJacobians();
+
+        // TODO:: robust cost
+        auto jacobians = edge->jacobians();
+        auto verticies = edge->verticies();
+        assert(jacobians.size() == verticies.size());
+        for (size_t i = 0; i < verticies.size(); ++i) {
+            auto v_i = verticies[i];
+            if (v_i->isFixed()) continue;    // Hessian 里不需要添加它的信息，也就是它的雅克比为 0
+
+            auto jacobian_i = jacobians[i];
+            ulong index_i = v_i->orderingId();
+            ulong dim_i = v_i->localDimension();
+
+            // 鲁棒核函数会修改残差和信息矩阵，如果没有设置 robust cost function，就会返回原来的
+            double drho;
+            MatXX robustInfo(edge->information().rows(),edge->information().cols());
+            edge->robustInfo(drho,robustInfo);
+
+            MatXX JtW = jacobian_i.transpose() * robustInfo;
+            for (size_t j = i; j < verticies.size(); ++j) {
+                auto v_j = verticies[j];
+
+                if (v_j->isFixed()) continue;
+
+                auto jacobian_j = jacobians[j];
+                ulong index_j = v_j->orderingId();
+                ulong dim_j = v_j->localDimension();
+
+                assert(v_j->orderingId() != -1);
+                MatXX hessian = JtW * jacobian_j;
+
+                // 所有的信息矩阵叠加起来
+                H.block(index_i, index_j, dim_i, dim_j).noalias() += hessian;
+                if (j != i) {
+                    // 对称的下三角
+                    H.block(index_j, index_i, dim_j, dim_i).noalias() += hessian.transpose();
+
+                }
+            }
+            b.segment(index_i, dim_i).noalias() -=
+                    drho * jacobian_i.transpose()* edge->information() * edge->residual();
+        }
+
+    }
+    Hessian_ = H;
+    b_ = b;
+    t_hessian_cost_ += t_h.toc();
+
+    if (H_prior_.rows() > 0) {
+        MatXX H_prior_tmp = H_prior_;
+        VecX b_prior_tmp = b_prior_;
+
+        /// 遍历所有 POSE 顶点，然后设置相应的先验维度为 0 .  fix 外参数, SET PRIOR TO ZERO
+        /// landmark 没有先验
+        for (auto vertex : verticies_) {
+            if (isPoseVertex(vertex.second) && vertex.second->isFixed() ) {
+                int idx = vertex.second->orderingId();
+                int dim = vertex.second->localDimension();
+                H_prior_tmp.block(idx,0, dim, H_prior_tmp.cols()).setZero();
+                H_prior_tmp.block(0,idx, H_prior_tmp.rows(), dim).setZero();
+                b_prior_tmp.segment(idx,dim).setZero();
+//                std::cout << " fixed prior, set the Hprior and bprior part to zero, idx: "<<idx <<" dim: "<<dim<<std::endl;
+            }
+        }
+        Hessian_.topLeftCorner(ordering_poses_, ordering_poses_) += H_prior_tmp;
+        b_.head(ordering_poses_) += b_prior_tmp;
+    }
+    delta_x_ = VecX::Zero(size);  // initial delta_x = 0_n;
+
+    Eigen::setNbThreads(threadNum);
+}
+
+void Problem::makeHessianMultiThread() {
+    TicToc t_h;
+    ulong size = ordering_generic_;
+    m_H.setZero(size, size);
+    m_b.setZero(size);
+
+    int thd_num = 6;
+    thread thd[thd_num];
+    int start = 0, end = 0;
+    cout << "Total edges: " << edges_.size() << endl;
+    for (int i = 1; i <= thd_num; ++i) {
+        end = edges_.size() * i / thd_num;
+        thd[i - 1] = thread(mem_fn(&Problem::thdDoEdges), this, start, end - 1);
+        thd[i - 1].join();
+        start = end;
+    }
+
+//    for (int i = 0; i < thd_num; ++i) {
+//        thd[i].join();
+//    }
+
+    Hessian_ = m_H;
+    b_ = m_b;
+    t_hessian_cost_ += t_h.toc();
+
+    if (H_prior_.rows() > 0) {
+        MatXX H_prior_tmp = H_prior_;
+        VecX b_prior_tmp = b_prior_;
+
+        for (auto vertex : verticies_) {
+            if (isPoseVertex(vertex.second) && vertex.second->isFixed()) {
+                int idx = vertex.second->orderingId();
+                int dim = vertex.second->localDimension();
+                H_prior_tmp.block(idx, 0, dim, H_prior_tmp.cols()).setZero();
+                H_prior_tmp.block(0, idx, H_prior_tmp.rows(), dim).setZero();
+                b_prior_tmp.segment(idx, dim).setZero();
+            }
+        }
+        Hessian_.topLeftCorner(ordering_poses_, ordering_poses_) += H_prior_tmp;
+        b_.head(ordering_poses_) += b_prior_tmp;
+    }
+    delta_x_ = VecX::Zero(size);
+}
+
+void Problem::thdDoEdges(int start, int end) {
+    auto it = edges_.begin();
+    for (int i = 0; i <= end; ++i) {
+        if (i < start) {
+            ++it;
+            continue;
+        }
+
+        auto edge = *it;
+        edge.second->computeResidual();
+        edge.second->computeJacobians();
+        auto jacobians = edge.second->jacobians();
+        auto verticies = edge.second->verticies();
+        assert(jacobians.size() == verticies.size());
+
+        for (size_t i = 0; i < verticies.size(); ++i) {
+            auto v_i = verticies[i];
+            if (v_i->isFixed()) {
+                continue;
+            }
+            auto jacobian_i = jacobians[i];
+            ulong index_i = v_i->orderingId();
+            ulong dim_i = v_i->localDimension();
+
+            double drho;
+            MatXX robustInfo(edge.second->information().rows(),
+                             edge.second->information().cols());
+            edge.second->robustInfo(drho, robustInfo);
+
+            MatXX JtW = jacobian_i.transpose() * robustInfo;
+            for (size_t j = i; j < verticies.size(); ++j) {
+                auto v_j = verticies[j];
+                if (v_j->isFixed()) {
+                    continue;
+                }
+                auto jacobian_j = jacobians[j];
+                ulong index_j = v_j->orderingId();
+                ulong dim_j = v_j->localDimension();
+                assert(v_j->orderingId() != -1);
+                MatXX hessian = JtW * jacobian_j;
+                m_mutex.lock();
+                m_H.block(index_i, index_j, dim_i, dim_j).noalias() += hessian;
+                if (j != i) {
+                    m_H.block(index_j, index_j, dim_j,
+                              dim_i).noalias() += hessian.transpose();
+                }
+                m_mutex.unlock();
+            }
+            m_mutex.lock();
+            m_b.segment(index_i, dim_i).noalias() -=
+                    drho * jacobian_i.transpose()
+                    * edge.second->information() * edge.second->residual();
+            m_mutex.unlock();
+        }
+    }
 }
 
 /*
