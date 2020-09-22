@@ -68,7 +68,7 @@ public:
     bool solve(int iterations = 10);
     bool solveLM(int iterations = 10);
     bool solveDogleg(int iterations = 10);
-    bool isGoodStepDogleg();
+    bool isGoodStepInDogleg();
 
     /// 边缘化一个frame和以它为host的landmark
     bool marginalize(std::shared_ptr<Vertex> frameVertex,
@@ -110,6 +110,13 @@ private:
     void makeHessianMultiThread();
     /// 处理边的线程函数，被makeHessianMultiThread()调用
     void thdDoEdges(int start, int end);
+
+    void computeChiInitAndLambdaInit();
+    void computeLambdaInitLM_Nielsen();
+    void computeLambdaInitLM_Levenberg();
+    void computeLambdaInitLM_Marquardt();
+    void computeLambdaInitLM_Quadratic();
+    void computeLambdaInitDogleg();
 
     /// Solve的实现，解通用问题
     bool solveGenericProblem(int iterations);
@@ -224,6 +231,15 @@ private:
     bool bDebug = false;
     double t_hessian_cost_ = 0.0;
     double t_PCGsovle_cost_ = 0.0;
+
+    // Dogleg　算法所需变量
+    double alpha_;
+    double beta_;
+    VecX h_dl_, h_sd_, h_gn_;
+    double radius_;
+    // 初始化参数
+    double maxDiagonal_;
+    double lastLambda_;
 };
 }
 }

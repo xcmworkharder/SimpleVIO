@@ -31,7 +31,7 @@ namespace backend {
 // 控制使用LM或者Dogleg 0: LM, 1: Dogleg
 const int algorithm_option = 1;
 // 控制是否加速,以及加速的方法 0:不加速 1:openmp 2:multiThread
-const int acc_option = 0;
+const int acc_option = 1;
 // LM的isGoodStep策略 0:原策略 1:原策略优化 2:新策略 3:新策略2
 const int lm_strategy_option = 2;
 // DogLeg的isGoodStep策略 0:论文rho_计算策略 1:和g2o一致的策略
@@ -180,6 +180,154 @@ bool Problem::removeEdge(std::shared_ptr<Edge> edge) {
 }
 
 bool Problem::solve(int iterations) {
+    bool result = false;
+    int option = algorithm_option; // 0: LM 1:Dogleg
+    switch (option) {
+        case 0:
+            result = solveLM(iterations);
+            break;
+        case 1:
+            result = solveDogleg(iterations);
+            break;
+        default:
+        std::cerr << "Unknown solve option: " << option << std::endl;
+            result = false;
+            break;
+    }
+
+    return result;
+}
+
+bool Problem::solveDogleg(int iterations) {
+    if (edges_.size() == 0 || verticies_.size() == 0) {
+        std::cerr << "Cannot solve problem without edges or verticies" << std::endl;
+        return false;
+    }
+
+    TicToc t_solve;
+    setOrdering();
+    makeHessian();
+    computeLambdaInitLM();
+    bool found = false;
+    radius_ = 1e4;
+
+    int iter = 0;
+    const int numIterationsMax = 10;
+    double last_chi_ = 1e20;
+    while (!found && (iter < numIterationsMax)) {
+        std::cout << "iter: " << iter << " , chi = " << currentChi_ << " ,  radius = " << radius_ << std::endl;
+        iter++;
+        bool oneStepSuccess = false;
+        int false_cnt = 0;
+        while (!oneStepSuccess && false_cnt < 10) {
+            double alpha_ = b_.squaredNorm() / ((Hessian_ * b_).dot(b_));
+            h_sd_ = alpha_ * b_;
+            h_gn_ = Hessian_.ldlt().solve(b_);
+            double h_sd_norm = h_sd_.norm();
+            double h_gn_norm = h_gn_.norm();
+            if (h_gn_norm <= radius_) {
+                h_dl_ = h_gn_;
+            } else if (alpha_ * h_sd_norm >= radius_) {
+                h_dl_ = (radius_ / h_sd_norm) * h_sd_;
+            } else {
+                VecX a = h_sd_;
+                VecX b = h_gn_;
+                double c = a.dot(b - a);
+                if (c <= 0) {
+                    beta_ = (-c + sqrt(c * c + (b - a).squaredNorm() * (radius_ * radius_ - a.squaredNorm())))
+                            / (b -a).squaredNorm();
+                } else {
+                    beta_ = (radius_ * radius_ - a.squaredNorm()) / (c + sqrt(c * c + (b - a).squaredNorm()
+                    * (radius_*radius_ - a.squaredNorm())));
+                }
+                assert(beta_ > 0.0 && beta_ < 1.0 && "Error while computing beta");
+                h_dl_ = a + beta_ * (b - a);
+            }
+            delta_x_ = h_dl_;
+
+            updateStates();
+            oneStepSuccess = isGoodStepInDogleg();
+            if (oneStepSuccess) {
+                makeHessian();
+                false_cnt = 0;
+            } else {
+                false_cnt++;
+                rollbackStates();
+            }
+        }
+        iter++;
+
+        if (last_chi_ - currentChi_ < 1e-5 || b_.norm() < 1e-5) {
+            std::cout << "Dogleg: find the right result. " << std::endl;
+            found = true;
+        }
+        last_chi_ = currentChi_;
+    }
+    std::cout << "problem solve cost: " << t_solve.toc() << " ms" << std::endl;
+    std::cout << " makeHessian cost: " << t_hessian_cost_ << " ms" << std::endl;
+    hessian_time_per_frame = t_hessian_cost_;
+    time_per_frame = t_solve.toc();
+    solve_count_per_frame = iter;
+    t_hessian_cost_ = 0.0;
+    return true;
+}
+
+// Dogleg策略因子，用于判断Lambad在上次迭代中是否可以，以及Lambda怎么缩放
+bool Problem::isGoodStepInDogleg() {
+    double tempChi = 0.0;
+    for (auto edge: edges_) {
+        edge.second->computeResidual();
+        tempChi += edge.second->robustChi2();
+    }
+    if (err_prior_.size() > 0)
+        tempChi += err_prior_.norm();
+    tempChi *= 0.5;          // 1/2 * err^2
+
+    // 计算rho
+    double rho_ ;
+    int option = dogleg_strategy_option;  // 0: 论文策略;  1: 和g2o一致的策略
+    switch ( option ) {
+        case 0:{  // 论文策略, 计算 rho
+            // scale 即为论文中的 L(0) - L(h_dl), 参看 论文 4°和 3.20a 的公式说明
+            double scale=0.0;
+            if(h_dl_ == h_gn_){
+                scale = currentChi_;
+            } else if(h_dl_ == radius_ * b_ / b_.norm()) {
+                scale = radius_ * (2 * (alpha_ * b_).norm() - radius_) / (2 * alpha_);
+            } else {
+                scale = 0.5 * alpha_ * pow( (1 - beta_), 2) * b_.squaredNorm()
+                        + beta_ * (2 - beta_) * currentChi_;
+            }
+            // rho = ( F(x) - F(x_new) ) / ( L(0) - L(h_dl) )
+            rho_ = ( currentChi_ - tempChi )/ scale;
+            break;
+        }
+        case 1: {  // 按照 g2o 方式 计算 rho_
+            double linearGain = - double(delta_x_.transpose() * Hessian_ * delta_x_)
+                                + 2 * b_.dot(delta_x_);
+            rho_ = ( currentChi_ - tempChi ) / linearGain;
+            break;
+        }
+    }
+
+    // 以下 按照 论文方式更新 radius_
+    if (rho_ > 0.75 && isfinite(tempChi)) {
+        radius_ = std::max(radius_, 3 * delta_x_.norm());
+    }
+    else if (rho_ < 0.25) {
+        radius_ = std::max(radius_ * 0.5, 1e-7);
+    } else {
+        // do nothing
+    }
+    if (rho_ > 0 && isfinite(tempChi)) {
+        currentChi_ = tempChi;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+bool Problem::solveLM(int iterations) {
     if (edges_.size() == 0 || verticies_.size() == 0) {
         std::cerr << "\nCannot solve problem without edges or verticies" << std::endl;
         return false;
@@ -265,120 +413,74 @@ bool Problem::solve(int iterations) {
     return true;
 }
 
-bool Problem::solveDogleg(int iterations) {
-    if (edges_.size() == 0 || verticies_.size() == 0) {
-        std::cerr << "\nCannot solve problem without edges or verticies" << std::endl;
-        return false;
+// Chi 和 Lambda 初始化
+void Problem::computeChiInitAndLambdaInit() {
+    currentChi_ = 0.0;
+    for (auto edge: edges_) {
+        // 在MakeHessian()中已经计算了edge.second->ComputeResidual()
+        currentChi_ += edge.second->robustChi2();
     }
+    if (err_prior_.rows() > 0)
+        currentChi_ += err_prior_.squaredNorm();
+    currentChi_ *= 0.5;
 
-    TicToc t_solve;
-    // 统计优化变量的维数,为构建 H 矩阵做准备
-    setOrdering();
-    // 遍历edge, 构建 H 矩阵。里面有delta_x_初值
-    makeHessian();
-    // 使用新的 Chi 和 Lambda 的初始化
-    // ComputeLambdaInitLM();
-//    computeChiInitAndLambdaInit();
-//
-//    // 尝试把 r 从1 增大到 1e4 来避免MH-05数据集上漂移的问题
-//    bool found = false;
-//    double radius_ = 1e4;
-//    //bool stop = false;
-//    int iter = 0;
-//    const int numIterationsMax = 10;
-//    double last_chi_ = 1e20;
-//    while ( !found && (iter < numIterationsMax)) {
-//        std::cout << "iter: " << iter << " , chi= " << currentChi_
-//                  << ", radius= " << radius_ << std::endl;
-//        iter++;
-//        bool oneStepSuccess = false;
-//        int false_cnt = 0;
-//        while (!oneStepSuccess && false_cnt < 10)  {// 不断尝试 Lambda, 直到成功迭代一步
-//            // 计算alpha 和 h_gn
-//            double alpha_ = b_.squaredNorm() / ( (Hessian_ * b_).dot(b_) );
-//            //alpha_ = b_.squaredNorm() / (b_.transpose()*Hessian_*b_);
-//            h_sd_ = alpha_ * b_;
-//            // To Do: 此处Hessian_比较大, 直接求逆很耗时, 可采用 Gauss-Newton法求解
-//            //h_gn_ = Hessian_.inverse() * b_;
-//            h_gn_ = Hessian_.ldlt().solve(b_);
-//            double h_sd_norm = h_sd_.norm();
-//            double h_gn_norm = h_gn_.norm();
-//            // 计算h_dl 步长
-//            if ( h_gn_norm <= radius_){
-//                h_dl_ = h_gn_;
-//                // 此处条件判断直接用了 h_sd_norm, 和论文的 alpha_*h_sd_norm不同
-//
-//            }else if ( alpha_*h_sd_norm >= radius_ ) {
-//                h_dl_ = ( radius_ / h_sd_norm ) * h_sd_;
-//
-//            } else {
-//                // 计算beta用于更新步长
-//                // 此处a直接等于 h_sd_, 和论文的 alpha_* h_sd_ 有所不同
-//                //VecX a = alpha_ * h_sd_;
-//                VecX a  = h_sd_;
-//                VecX b = h_gn_;
-//                //double c = a.transpose() * (b - a);
-//                double c = a.dot( b - a );
-//                if (c <= 0){
-//                    beta_ = ( -c + sqrt(c*c + (b-a).squaredNorm() *
-//                                              (radius_*radius_ - a.squaredNorm())) )
-//                            / (b - a).squaredNorm();
-//
-//                }else{
-//                    beta_ = (radius_*radius_ - a.squaredNorm()) / (c +
-//                                                                   sqrt(c*c + (b-a).squaredNorm()
-//                                                                              * (radius_*radius_ - a.squaredNorm())));
-//
-//                }               assert(beta_ > 0.0 && beta_ < 1.0 && "Error while
-//                                               computing beta");
-//                                               // 此处 a 直接等于 h_sd_, 和论文的有所不同
-//                                               h_dl_= a + beta_ * ( b - a );
-//
-//    }
-//    delta_x_ = h_dl_;
-//    UpdateStates();
-//    oneStepSuccess = IsGoodStepInDogleg();
-//    // 后续处理,
-//    if(oneStepSuccess)
-//    {
-//    MakeHessian();
-//    false_cnt = 0;
-//
-//    }
-//    else
-//
-//    {
-//    false_cnt++;
-//    RollbackStates();
-//
-//
-//    }
-//    }
-//    iter++;
-//    if(last_chi_ - currentChi_ < 1e-5  || b_.norm() < 1e-5 )
-//
-//    {
-//    std::cout << "Dogleg: find the right result. " <<
-//    std::endl;
-//    found = true;
-//
-//    }
-//    last_chi_ = currentChi_;
-//
-//    }
-//    std::cout << "problem solve cost: " << t_solve.toc() << " ms" <<
-//    std::endl;
-//    std::cout << "   makeHessian cost: " << t_hessian_cost_ << " ms" <<
-//    std::endl;
-//    // 记录本次Hessian处理时长
-//    hessian_time_per_frame = t_hessian_cost_;
-//    // 记录本次frame时长(包括hessian时长)
-//    time_per_frame = t_solve.toc();
-//    // 记录本frame的求解次数
-//    solve_count_per_frame = iter;
-//
-//    t_hessian_cost_ = 0.;
-    return true;
+    maxDiagonal_ = 0;
+    ulong size = Hessian_.cols();
+    assert(Hessian_.rows() == Hessian_.cols() && "Hessian is not square");
+    for (ulong i = 0; i < size; ++i) {
+        maxDiagonal_ = std::max(fabs(Hessian_(i, i)), maxDiagonal_);
+    }
+    maxDiagonal_ = std::min(5e10, maxDiagonal_);
+
+    int option = chi_lambda_init_option; // 0:Nielsen; 1:Levenberg;  2:Marquardt;  3:Quadratic;  4:Doglet
+    switch (option) {
+        case 0: // NIELSEN:
+            computeLambdaInitLM_Nielsen();
+            break;
+        case 1: // LEVENBERG
+            computeLambdaInitLM_Levenberg();
+            break;
+        case 2:  // MARQUARDT
+            computeLambdaInitLM_Marquardt();
+            break;
+        case 3:  // QUADRATIC
+            computeLambdaInitLM_Quadratic();
+            break;
+        case 4:  // DOGLEG
+            computeLambdaInitDogleg();
+            break;
+        default:
+            cout << "Please choose correct LM strategy in .ymal file: 0 Nielsen; 1 LevenbergMarquardt; 2 Quadratic" << endl;
+            exit(-1);
+            break;
+    }
+}
+
+void Problem::computeLambdaInitLM_Nielsen() {
+    ni_ = 2.;
+    stopThresholdLM_ = 1e-10 * currentChi_;          // 迭代条件为 误差下降 1e-6 倍
+    double tau = 1e-5;  // 1e-5
+    currentLambda_ = tau * maxDiagonal_;
+    std::cout << "currentLamba_: "<<currentLambda_<<", maxDiagonal: "<<maxDiagonal_<<std::endl;
+}
+
+void Problem::computeLambdaInitLM_Levenberg() {
+    currentLambda_ = 1e-2;
+    lastLambda_ = currentLambda_;
+}
+
+void Problem::computeLambdaInitLM_Marquardt() {
+    double tau = 1e-5;  // 1e-5
+    currentLambda_ = tau * maxDiagonal_;
+}
+
+void Problem::computeLambdaInitLM_Quadratic() {
+    double tau = 1e-5;  // 1e-5
+    currentLambda_ = tau * maxDiagonal_;
+}
+
+void Problem::computeLambdaInitDogleg() {
+    currentLambda_ = 1e-7;
 }
 
 bool Problem::solveGenericProblem(int iterations) {
@@ -861,36 +963,81 @@ void Problem::removeLambdaHessianLM() {
 }
 
 bool Problem::isGoodStepInLM() {
+
+    int option = 1; // 1: normal 2:stratety referenced by "The Levenberg-Marguardt..." 3:another
     double scale = 0;
+    double tempChi = 0.0;
+    double rho = 0.0;
+    double h = 0;
+    double diff = 0;
+    double alpha_ = 0;
+    switch (option) {
+        case 1:
+            scale = 0;
 //    scale = 0.5 * delta_x_.transpose() * (currentLambda_ * delta_x_ + b_);
 //    scale += 1e-3;    // make sure it's non-zero :)
-    scale = 0.5 * delta_x_.transpose() * (currentLambda_ * delta_x_ + b_);
-    scale += 1e-6;    // make sure it's non-zero :)
+            scale = 0.5 * delta_x_.transpose() * (currentLambda_ * delta_x_ + b_);
+            scale += 1e-6;    // make sure it's non-zero :)
 
-    // recompute residuals after update state
-    double tempChi = 0.0;
-    for (auto edge : edges_) {
-        edge.second->computeResidual();
-        tempChi += edge.second->robustChi2();
-    }
-    if (err_prior_.size() > 0)
-        tempChi += err_prior_.norm();
-    tempChi *= 0.5;          // 1/2 * err^2
+            // recompute residuals after update state
+            tempChi = 0.0;
+            for (auto edge : edges_) {
+                edge.second->computeResidual();
+                tempChi += edge.second->robustChi2();
+            }
+            if (err_prior_.size() > 0)
+                tempChi += err_prior_.norm();
+            tempChi *= 0.5;          // 1/2 * err^2
 
-    double rho = (currentChi_ - tempChi) / scale;
-    if (rho > 0 && isfinite(tempChi))  { // last step was good, 误差在下降
+            rho = (currentChi_ - tempChi) / scale;
+            if (rho > 0 && isfinite(tempChi))  { // last step was good, 误差在下降
 
-        double alpha = 1. - pow((2 * rho - 1), 3);
-        alpha = std::min(alpha, 2. / 3.);
-        double scaleFactor = (std::max)(1. / 3., alpha);
-        currentLambda_ *= scaleFactor;
-        ni_ = 2;
-        currentChi_ = tempChi;
-        return true;
-    } else {
-        currentLambda_ *= ni_;
-        ni_ *= 2;
-        return false;
+                double alpha = 1. - pow((2 * rho - 1), 3);
+                alpha = std::min(alpha, 2. / 3.);
+                double scaleFactor = (std::max)(1. / 3., alpha);
+                currentLambda_ *= scaleFactor;
+                ni_ = 2;
+                currentChi_ = tempChi;
+                return true;
+            } else {
+                currentLambda_ *= ni_;
+                ni_ *= 2;
+                return false;
+            }
+            break;
+
+        case 2:
+            rho = (currentChi_ - tempChi) / scale;
+            h = delta_x_.transpose() * b_;
+            diff = currentChi_ - tempChi;
+            alpha_ = h / (0.5 * diff + h);
+            if (rho > 0 && isfinite(tempChi)) {
+                currentLambda_ = std::max(currentLambda_ / (1 + alpha_), 1e-7);
+                currentChi_ = tempChi;
+                return true;
+            } else if (rho <= 0 && isfinite(tempChi)) {
+                currentLambda_ = currentLambda_ + std::abs(diff * 0.5 / alpha_);
+                currentChi_ = tempChi;
+                return true;
+            } else {
+                return false;
+            }
+            break;
+
+        case 3:
+            rho = (currentChi_ - tempChi) / scale;
+            if (rho < 0.25 && isfinite(tempChi)) {
+                currentLambda_ *= 2.0;
+                currentChi_ = tempChi;
+                return true;
+            } else if (rho > 0.75 && isfinite(tempChi)) {
+                currentLambda_ /= 3.0;
+                currentChi_  = tempChi;
+                return true;
+            } else {
+                return false;
+            }
+            break;
     }
 }
 
